@@ -32,6 +32,8 @@ import sys
 import time
 from pathlib import Path
 
+import psutil
+
 # Configurable parameters
 CACHE_PERIOD_S: float = 27
 MAX_WAIT_PREV_S: int = 5
@@ -74,9 +76,23 @@ def wait_for_previous_command(pid_file: Path):
     """
     for _ in range(MAX_WAIT_PREV_S):
         if not pid_file.is_file():
+            # PID file cleaned up, process finished
             break
         time.sleep(1)
     else:
+        # Timeout waiting for previous command to finish.
+        # Let's figure out if it's just stale lock and clean it.
+        pid: int | None = None
+        try:
+            pid = int(pid_file.read_text())
+        except (ValueError, OSError):
+            # Corrupted or not readable PID file
+            pass
+        else:
+            if not psutil.pid_exists(pid):
+                # Stale lock file, remove it
+                pid_file.unlink()
+                return
         logging.error("Timeout waiting for previous command to finish.")
         sys.exit(1)
 
