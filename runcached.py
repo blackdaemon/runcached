@@ -1,124 +1,143 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+#! /usr/bin/env python3
+# -*- Mode: Python; py-indent-offset: 4; coding: utf-8 -*-
+# vim: fenc=utf-8 tabstop=4 softtabstop=4 shiftwidth=4 expandtab
 
 # runcached
 # Execute commands while caching their output for subsequent calls. 
 # Command output will be cached for $cacheperiod and replayed for subsequent calls
+#
 # 2012
 # Author Spiros Ioannou sivann <at> gmail.com
 #
+# 2024
+# Author Pavel Vitis <pavelvitis@gmail.com>
 
-cacheperiod=27 #seconds
-maxwaitprev=5	#seconds to wait for previous same command to finish before quiting
-minrand=0		#random seconds to wait before running cmd
-maxrand=0
+from __future__ import annotations
 
-import os
-import sys
-import errno
-import subprocess
-import time
+__authors__ = [
+    "Spiros Ioannou sivann <at> gmail.com",
+    "Pavel Vitiš <pavelvitis@gmail.com>",
+]
+__maintainer__ = "Pavel Vitis <pavelvitis@gmail.com"
+__license__ = "Apache License, Version 2.0"
+__status__ = "Development"
+
 import hashlib
+import logging
+import os
 import random
-import atexit
-import syslog
-import tempfile
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# Configurable parameters
+CACHE_PERIOD_S: float = 27
+MAX_WAIT_PREV_S: int = 5
+MIN_RAND_S: float = 0
+MAX_RAND_S: float = 0
 
 
-argskip=1
-
-if (len(sys.argv) < 2) or (len(sys.argv) == 2 and sys.argv[1] == '-c'):
-	sys.exit('Usage: %s [-c cacheperiod] <command to execute with args>' % sys.argv[0])
-
-if sys.argv[1] == '-c':
-	cacheperiod=int(sys.argv[2])
-	argskip=3
-
-cmd=" ".join(sys.argv[argskip:])
-
-#hash of executed command w/args
-m = hashlib.md5()
-m.update(cmd.encode('utf-8'))
-cmdmd5=m.hexdigest()
-
-cachedir='/tmp'
-
-#random sleep to avoid racing condition of creating the pid on the same time
-if maxrand-minrand > 0:
-	time.sleep(random.randrange(minrand,maxrand))
-
-pidfile=cachedir+os.sep+cmdmd5+'-runcached.pid'
-cmddatafile=cachedir+os.sep+cmdmd5+'.data'
-cmdexitcode=cachedir+os.sep+cmdmd5+'.exitcode'
-cmdfile=cachedir+os.sep+cmdmd5+'.cmd'
+def get_cache_dir() -> Path:
+    """
+    Return the system's caching directory.
+    """
+    from tempfile import gettempdir
+    return Path(gettempdir())
 
 
-
-def cleanup():
-	if os.path.isfile(pidfile):
-		os.remove(pidfile)
-
-
-def myexcepthook(exctype, value, traceback):
-	#if exctype == KeyboardInterrupt:
-	#	 print "Handler code goes here"
-	cleanup()
-	syslog.syslog(syslog.LOG_ERR, value.__str__())
-	_old_excepthook(exctype, value, traceback)
-
-def runit(cmd,cmddatafile,cmdexitcode,cmdfile):
-	f_stdout=open(cmddatafile, 'w')
-	#f_stderr=open('stderr.txt', 'w')
-	f_stderr=f_stdout
-	p = subprocess.Popen(cmd, stdout=f_stdout, stderr=f_stderr,shell=True)
-	p.communicate()
-	f_stdout.close()
-	exitcode=p.returncode
-	with open(cmdfile, 'w') as f:
-		f.write(cmd)
-	with open(cmdexitcode, 'w') as f:
-		f.write(str(exitcode))
-
-def file_get_contents(filename):
-	with open(filename) as f:
-		return f.read()
+def generate_command_hash(cmd: list) -> str:
+    """
+    Generate an MD5 hash for the given command.
+    """
+    # noinspection InsecureHash
+    return hashlib.md5(" ".join(cmd).encode("utf-8")).hexdigest()
 
 
-#install cleanup hook
-_old_excepthook = sys.excepthook
-sys.excepthook = myexcepthook
-atexit.register(cleanup)
+def execute_command(cmd: list, data_file: Path, exit_file: Path, cmd_file: Path) -> None:
+    """
+    Execute the command and cache its output.
+    """
+    with data_file.open('w') as f_stdout:
+        process = subprocess.Popen(cmd, stdout=f_stdout, stderr=f_stdout)
+        process.communicate()
+    with exit_file.open('w') as f:
+        f.write(str(process.returncode))
+    with cmd_file.open('w') as f:
+        f.write(" ".join(cmd))
 
-#don't run the same command in parallel, wait the previous one to finish
-count=maxwaitprev
-while os.path.isfile(pidfile):
-#remove stale pid if left there without a running process
-	prevpid=file_get_contents(pidfile).strip()
-	if not os.path.exists("/proc/"+prevpid):
-		os.remove(pidfile)
-	time.sleep(1)
-	count-=1
-	if count == 0:
-		sys.stderr.write("timeout waiting for '%s' to finish. (pid: %s)\n" % (cmd,pidfile))
-		sys.exit (1)
 
-#write pidfile
-mypid=os.getpid()
-with open(pidfile, 'w') as f:
-	f.write(str(mypid))
+def wait_for_previous_command(pid_file: Path):
+    """
+    Wait for a previous instance of the command to finish.
+    """
+    for _ in range(MAX_WAIT_PREV_S):
+        if not pid_file.is_file():
+            break
+        time.sleep(1)
+    else:
+        logging.error("Timeout waiting for previous command to finish.")
+        sys.exit(1)
 
-#if not cached before, run it
-if not os.path.isfile(cmddatafile):
-	runit(cmd,cmddatafile,cmdexitcode,cmdfile)
 
-#if too old, re-run it
-currtime=int(time.time())
-lastrun=int(os.path.getmtime(cmddatafile))
-diffsec=currtime - lastrun
-if (diffsec > cacheperiod):
-	runit(cmd,cmddatafile,cmdexitcode,cmdfile)
+def main():
+    # Setup logging
+    logging.basicConfig(level=logging.INFO)
 
-with open(cmddatafile, 'rb') as f:
-	sys.stdout.buffer.write(f.read())
+    if len(sys.argv) < 2:
+        sys.exit(f"Usage: {sys.argv[0]} [-c cache_period_in_s] <command>")
 
-cleanup()
+    command: list
+    cache_period: float = CACHE_PERIOD_S
+    if sys.argv[1] == '-c':
+        cache_period = max(0.0, float(sys.argv[2]))
+        command = list(sys.argv[3:])
+    else:
+        command = list(sys.argv[1:])
+
+    command_hash = generate_command_hash(command)
+    cache_dir = get_cache_dir()
+    pid_file = Path(cache_dir, f"{command_hash}.pid")
+    data_file = Path(cache_dir, f"{command_hash}.data")
+    exit_file = Path(cache_dir, f"{command_hash}.exit")
+    cmd_file = Path(cache_dir, f"{command_hash}.cmd")
+
+    # Random sleep
+    if MAX_RAND_S - MIN_RAND_S > 0:
+        time.sleep(random.uniform(MIN_RAND_S, MAX_RAND_S))
+
+    # Avoid parallel execution
+    wait_for_previous_command(pid_file)
+
+    # Create a PID file
+    with pid_file.open('w') as f:
+        f.write(str(os.getpid()))
+
+    try:
+        # Check cache and execute if needed
+        if not data_file.is_file() or time.time() - data_file.stat().st_mtime > cache_period:
+            execute_command(command, data_file, exit_file, cmd_file)
+
+        try:
+            # Output cached data
+            with data_file.open('r') as f:
+                sys.stdout.write(f.read())
+            # Flush output here to force SIGPIPE to be triggered while inside this try block.
+            sys.stdout.flush()
+        except BrokenPipeError:
+            # This handles BrokenPipeError on piping the result to 'head'.
+            # https://docs.python.org/3/library/signal.html#note-on-sigpipe
+            # Python flushes standard streams on exit; redirect remaining output to devnull to avoid another
+            # BrokenPipeError at shutdown
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+            # Python exits with error code 1 on EPIPE
+            sys.exit(1)
+    finally:
+        # Cleanup the PID file
+        if pid_file.is_file():
+            pid_file.unlink()
+
+
+if __name__ == "__main__":
+    main()
