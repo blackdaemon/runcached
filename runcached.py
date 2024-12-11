@@ -97,12 +97,17 @@ def wait_for_previous_command(pid_file: Path):
         sys.exit(1)
 
 
+def print_usage() -> None:
+    print(f"Usage: {sys.argv[0]} [-c cache_period_in_s (float)] <command>")
+
+
 def main():
     # Setup logging
     logging.basicConfig(level=logging.INFO)
 
     if len(sys.argv) < 2:
-        sys.exit(f"Usage: {sys.argv[0]} [-c cache_period_in_s] <command>")
+        print_usage()
+        sys.exit(1)
 
     command: list
     cache_period: float = CACHE_PERIOD_S
@@ -111,6 +116,14 @@ def main():
         command = list(sys.argv[3:])
     else:
         command = list(sys.argv[1:])
+
+    # Handle end of parameters mark
+    if command[0] == "--":
+        command.pop(0)
+
+    if not command:
+        print_usage()
+        sys.exit(1)
 
     command_hash = generate_command_hash(command)
     cache_dir = get_cache_dir()
