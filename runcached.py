@@ -26,6 +26,7 @@ import hashlib
 import logging
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -54,11 +55,11 @@ def generate_command_hash(cmd: list) -> str:
     return hashlib.md5(" ".join(cmd).encode("utf-8")).hexdigest()
 
 
-def execute_command(cmd: list, data_file: Path, exit_file: Path, cmd_file: Path) -> None:
+def execute_command(cmd: list, data_file: Path, data_file_encoding: str, exit_file: Path, cmd_file: Path) -> None:
     """
     Execute the command and cache its output.
     """
-    with data_file.open('w') as f_stdout:
+    with data_file.open('w', encoding=data_file_encoding) as f_stdout:
         process = subprocess.Popen(cmd, stdout=f_stdout, stderr=f_stdout)
         process.communicate()
     with exit_file.open('w') as f:
@@ -114,18 +115,24 @@ def main():
         f.write(str(os.getpid()))
 
     try:
-        # Check cache and execute if needed
+        # Check cache and execute the command if needed
         if not data_file.is_file() or time.time() - data_file.stat().st_mtime > cache_period:
-            execute_command(command, data_file, exit_file, cmd_file)
+            # Execute and cache the result
+            # Data file encoding must be the same as stdout encoding
+            data_file_encoding = sys.stdout.encoding
+            if not data_file_encoding:
+                data_file_encoding = "utf-8"
+            execute_command(command, data_file, data_file_encoding, exit_file, cmd_file)
 
         try:
             # Output cached data
-            with data_file.open('r') as f:
-                sys.stdout.write(f.read())
+            # Open in binary mode and copy to stdout buffer directly to avoid unnecessary decoding/encoding
+            with data_file.open('rb') as f:
+                shutil.copyfileobj(f, sys.stdout.buffer)
             # Flush output here to force SIGPIPE to be triggered while inside this try block.
             sys.stdout.flush()
         except BrokenPipeError:
-            # This handles BrokenPipeError on piping the result to 'head'.
+            # This handles BrokenPipeError on piping the result to 'head' or similar tools.
             # https://docs.python.org/3/library/signal.html#note-on-sigpipe
             # Python flushes standard streams on exit; redirect remaining output to devnull to avoid another
             # BrokenPipeError at shutdown
