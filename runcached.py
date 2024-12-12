@@ -62,7 +62,10 @@ def generate_command_hash(command: Iterable[str]) -> str:
 def execute_command(command: Sequence[str], cmd_file: Path, exit_file: Path, output_cache_file: Path,
                     output_cache_file_encoding: str = "utf-8") -> int:
     """
-    Execute the command and cache its output.
+    Execute a command and redirect results into cache files:
+
+        - execution return_code into exit_file
+        - stdout & stderr into output_cache_file
     """
     with output_cache_file.open('w', encoding=output_cache_file_encoding) as f_stdout:
         process = subprocess.Popen(command, stdout=f_stdout, stderr=f_stdout)
@@ -99,7 +102,15 @@ def execute_command_and_cache_output(command: Iterable[str], cache_period: float
 
 def wait_for_previous_command(pid_file: Path) -> bool:
     """
-    Wait for a previous instance of the command to finish.
+    Wait for a previous instance of the command to finish by checking for the existence
+    of the given pid_file.
+
+    Returns True if the pid_file disappears within a time limit, False on timeout.
+
+    Also handles stale pid_file by checking if the process is still running. If it's not running,
+    the pid_file is removed and function returns True.
+
+    :returns: Return True on success, False on timeout
     """
     for _ in range(MAX_WAIT_PREV_S):
         if not pid_file.is_file():
@@ -124,11 +135,22 @@ def wait_for_previous_command(pid_file: Path) -> bool:
         return False
 
 
-def send_output_to_stdout(output_cache_file: Path) -> bool:
+def send_text_to_stdout(text_file: Path) -> bool:
+    """
+    Send text file to stdout.
+
+    Broken pipe error is handled by sending the rest of the text to /dev/null.
+
+    See for more details:
+    https://docs.python.org/3/library/signal.html#note-on-sigpipe
+
+    :param text_file:
+    :return: Return True on complete output, False on BrokenPipeError
+    """
     try:
         # Output cached data
         # Open in binary mode and copy to stdout buffer directly to avoid unnecessary decoding/encoding
-        with output_cache_file.open('rb') as f:
+        with text_file.open('rb') as f:
             shutil.copyfileobj(f, sys.stdout.buffer)
         # Flush output here to force SIGPIPE to be triggered while inside this try block.
         sys.stdout.flush()
@@ -145,6 +167,16 @@ def send_output_to_stdout(output_cache_file: Path) -> bool:
 
 
 def create_pid_file(command: Iterable[str]) -> Optional[Path]:
+    """
+    Create PID file for given command.
+
+    If there is a process with the same command already runhing, wait for its completion.
+
+    Return None on timeout waiting for already running process.
+
+    :param command:
+    :return: PID if PID file has been successfully created or None if there was a timeout waiting for already running process
+    """
     cache_dir = get_cache_dir()
     command_hash = generate_command_hash(command)
     pid_file = Path(cache_dir, f"{command_hash}.pid")
