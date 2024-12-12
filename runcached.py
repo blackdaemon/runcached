@@ -228,7 +228,7 @@ def main():
     args = parser.parse_args()
 
     command = [args.command] + args.rest
-    cache_timeout = max(0.0, args.cache_timeout if args.cache_timeout else DEFAULT_CACHE_TIMEOUT_S)
+    cache_timeout = max(0.0, args.cache_timeout if args.cache_timeout is not None else DEFAULT_CACHE_TIMEOUT_S)
 
     pid_file: Path = create_pid_file(command)
     # Timeout waiting for already running process
