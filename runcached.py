@@ -140,25 +140,30 @@ def wait_for_previous_command(pid_file: Path, wait_time_sec: int) -> bool:
 
     :returns: Return True on success, False on timeout
     """
+    if not pid_file.is_file():
+        # PID file cleaned up, process finished
+        return True
+
     for _ in range(wait_time_sec):
+        time.sleep(1)
         if not pid_file.is_file():
             # PID file cleaned up, process finished
             return True
-        time.sleep(1)
-    else:
-        # Timeout waiting for previous command to finish.
-        # Let's figure out if it's just stale lock and clean it.
+        # Check for stale PID file
         try:
             pid: int = int(pid_file.read_text())
-        except (ValueError, OSError):
+        except (ValueError, IOError):
             # Corrupted or not readable PID file
-            pass
+            # Try to remove it anyway
+            with suppress(IOError):
+                pid_file.unlink()
+            return False
         else:
             if not pid_exists(pid):
-                # Stale lock file, remove it
+                # Stale PID file, remove it
                 pid_file.unlink()
                 return True
-
+    else:
         print("ERROR: Timeout waiting for previous command to finish.")
         return False
 
