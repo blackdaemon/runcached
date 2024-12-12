@@ -23,7 +23,6 @@ __license__ = "Apache License, Version 2.0"
 __status__ = "Development"
 
 import argparse
-import hashlib
 import logging
 import os
 import random
@@ -32,13 +31,14 @@ import subprocess
 import sys
 import time
 from collections.abc import Sequence
+from hashlib import md5
 from pathlib import Path
 from typing import Iterable, Optional
 
 import psutil
 
 # Configurable parameters
-CACHE_PERIOD_S: float = 20
+DEFAULT_CACHE_TIMEOUT_S: float = 20
 MAX_WAIT_PREV_S: int = 5
 MIN_RAND_S: float = 0
 MAX_RAND_S: float = 0
@@ -57,10 +57,10 @@ def generate_command_hash(command: Iterable[str]) -> str:
     Generate an MD5 hash for the given command.
     """
     # noinspection InsecureHash
-    return hashlib.md5(" ".join(command).encode("utf-8")).hexdigest()
+    return md5(" ".join(command).encode("utf-8")).hexdigest()
 
 
-def execute_command(command: Sequence[str], cmd_file: Path, exit_file: Path, output_cache_file: Path,
+def execute_command(command: Sequence[str], exit_file: Path, output_cache_file: Path,
                     output_cache_file_encoding: str = "utf-8") -> int:
     """
     Execute a command and redirect results into cache files:
@@ -74,34 +74,36 @@ def execute_command(command: Sequence[str], cmd_file: Path, exit_file: Path, out
 
     with exit_file.open('w') as f:
         f.write(str(process.returncode))
-    with cmd_file.open('w') as f:
-        f.write(" ".join(command))
 
     return process.returncode
 
 
-def execute_command_and_cache_output(command: Iterable[str], cache_period: float) -> (Path, int):
+def execute_or_get_cached_result(command: Iterable[str], cache_period_sec: float) -> (Path, int):
     cache_dir = get_cache_dir()
     command_hash = generate_command_hash(command)
     output_cache_file = Path(cache_dir, f"{command_hash}.data")
     exit_file = Path(cache_dir, f"{command_hash}.exit")
     cmd_file = Path(cache_dir, f"{command_hash}.cmd")
 
-    if output_cache_file.is_file() and time.time() - output_cache_file.stat().st_mtime <= cache_period:
+    if output_cache_file.is_file() and time.time() - output_cache_file.stat().st_mtime <= cache_period_sec:
         return output_cache_file, int(exit_file.read_text())
+
+    if not cmd_file.is_file():
+        with cmd_file.open('w') as f:
+            f.write(" ".join(command))
 
     # Execute and cache the result
     # Output cache file encoding must be the same as stdout encoding
     cache_file_encoding = sys.stdout.encoding
     if not cache_file_encoding:
         cache_file_encoding = "utf-8"
-    return_code = execute_command(command, cmd_file, exit_file, output_cache_file,
+    return_code = execute_command(command, exit_file, output_cache_file,
                                   output_cache_file_encoding=cache_file_encoding)
 
     return output_cache_file, return_code
 
 
-def wait_for_previous_command(pid_file: Path) -> bool:
+def wait_for_previous_command(pid_file: Path, wait_time_sec: int) -> bool:
     """
     Wait for a previous instance of the command to finish by checking for the existence
     of the given pid_file.
@@ -113,7 +115,7 @@ def wait_for_previous_command(pid_file: Path) -> bool:
 
     :returns: Return True on success, False on timeout
     """
-    for _ in range(MAX_WAIT_PREV_S):
+    for _ in range(wait_time_sec):
         if not pid_file.is_file():
             # PID file cleaned up, process finished
             return True
@@ -187,7 +189,7 @@ def create_pid_file(command: Iterable[str]) -> Optional[Path]:
         time.sleep(random.uniform(MIN_RAND_S, MAX_RAND_S))
 
     # Avoid parallel execution
-    if not wait_for_previous_command(pid_file):
+    if not wait_for_previous_command(pid_file, MAX_WAIT_PREV_S):
         return None
 
     # Create a PID file
@@ -195,11 +197,6 @@ def create_pid_file(command: Iterable[str]) -> Optional[Path]:
         f.write(str(os.getpid()))
 
     return pid_file
-
-
-def print_usage() -> None:
-    print(f"Usage: {os.path.basename(sys.argv[0])} [-c cache_period_in_s (float)] <command>")
-    print(f"  Default cache period is {CACHE_PERIOD_S:.2f}s")
 
 
 def main():
@@ -225,11 +222,9 @@ def main():
 
     try:
         # Check cache and execute the command if needed
-        cached_output: Path
-        return_code: int
-        cached_output, return_code = execute_command_and_cache_output(command, cache_period)
+        cached_output, return_code = execute_or_get_cached_result(command, cache_timeout)
 
-        stdout_ok: bool = send_output_to_stdout(cached_output)
+        stdout_ok = send_text_to_stdout(cached_output)
 
         if stdout_ok:
             sys.exit(return_code)
