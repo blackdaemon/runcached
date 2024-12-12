@@ -27,6 +27,7 @@ import os
 import random
 import time
 from collections.abc import Sequence
+from contextlib import suppress
 from hashlib import md5
 from pathlib import Path
 from shutil import copyfileobj
@@ -71,17 +72,25 @@ def execute_command(command: Sequence[str], exit_file: Path, output_cache_file: 
         - execution return_code into exit_file
         - stdout & stderr into output_cache_file
     """
-    with output_cache_file.open('w', encoding=output_cache_file_encoding) as f_stdout:
-        process = Popen(command, stdout=f_stdout, stderr=f_stdout)
-        process.communicate()
+    try:
+        with output_cache_file.open('w', encoding=output_cache_file_encoding) as f_stdout:
+            process = Popen(command, stdout=f_stdout, stderr=f_stdout)
+            process.communicate()
 
-    # Must update the modification timestamp so that the command runtime does not add to cache expiration timeout
-    output_cache_file.touch()
+        # Must update the modification timestamp so that the command runtime does not add to cache expiration timeout
+        output_cache_file.touch()
 
-    with exit_file.open('w') as f:
-        f.write(str(process.returncode))
+        with exit_file.open('w') as f:
+            f.write(str(process.returncode))
 
-    return process.returncode
+        return process.returncode
+    except:
+        # Cleanup on error and remove cache files
+        with suppress(IOError):
+            output_cache_file.unlink()
+        with suppress(IOError):
+            exit_file.unlink()
+        raise
 
 
 def execute_or_get_cached_result(command: Iterable[str], cache_period_sec: float) -> (Path, int):
@@ -92,7 +101,7 @@ def execute_or_get_cached_result(command: Iterable[str], cache_period_sec: float
     cached output is returned without running the command.
 
     :param command:
-    :param cache_period_sec:
+    :param cache_timeout_sec: Cache timeout in seconds
     :return: (output_cache_file, return_code)
     """
     cache_dir = get_cache_dir()
