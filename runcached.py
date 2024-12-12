@@ -22,6 +22,7 @@ __maintainer__ = "Pavel Vitis <pavelvitis@gmail.com"
 __license__ = "Apache License, Version 2.0"
 __status__ = "Development"
 
+import argparse
 import hashlib
 import logging
 import os
@@ -205,25 +206,17 @@ def main():
     # Setup logging
     logging.basicConfig(level=logging.INFO)
 
-    if len(sys.argv) < 2:
-        print_usage()
-        sys.exit(1)
+    desc = """
+    Run command and cache its output. Return cached output if cache not expired.
+    """
+    parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument("command", nargs="+")
+    parser.add_argument("-c", "--cache-timeout", type=float, help=f"Cache timeout in seconds (float), default is {DEFAULT_CACHE_TIMEOUT_S}s")
+    args = parser.parse_args()
 
-    command: list
-    cache_period: float = CACHE_PERIOD_S
-    if sys.argv[1] == '-c':
-        cache_period = max(0.0, float(sys.argv[2]))
-        command = list(sys.argv[3:])
-    else:
-        command = list(sys.argv[1:])
-
-    # Handle end of parameters mark
-    if command[0] == "--":
-        command.pop(0)
-
-    if not command:
-        print_usage()
-        sys.exit(1)
+    command = args.command
+    print(command)
+    cache_timeout = max(0.0, args.cache_timeout if args.cache_timeout else DEFAULT_CACHE_TIMEOUT_S)
 
     pid_file: Path = create_pid_file(command)
     # Timeout waiting for already running process
