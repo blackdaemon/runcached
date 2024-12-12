@@ -1,4 +1,4 @@
-#! /usr/bin/env python3
+#! /usr/bin/env -S python3 -O -u
 # -*- Mode: Python; py-indent-offset: 4; coding: utf-8 -*-
 # vim: fenc=utf-8 tabstop=4 softtabstop=4 shiftwidth=4 expandtab
 
@@ -23,19 +23,22 @@ __license__ = "Apache License, Version 2.0"
 __status__ = "Development"
 
 import argparse
-import logging
 import os
 import random
-import shutil
-import subprocess
-import sys
 import time
 from collections.abc import Sequence
 from hashlib import md5
 from pathlib import Path
+from shutil import copyfileobj
+from subprocess import Popen
+from sys import stdout, exit
 from typing import Iterable, Optional
 
-import psutil
+# Avoid importing psutil if not necessary
+if Path("/proc").is_dir():
+    pid_exists = lambda pid: Path(f"/proc/{pid}").exists()
+else:
+    from psutil import pid_exists
 
 # Configurable parameters
 DEFAULT_CACHE_TIMEOUT_S: float = 20
@@ -69,7 +72,7 @@ def execute_command(command: Sequence[str], exit_file: Path, output_cache_file: 
         - stdout & stderr into output_cache_file
     """
     with output_cache_file.open('w', encoding=output_cache_file_encoding) as f_stdout:
-        process = subprocess.Popen(command, stdout=f_stdout, stderr=f_stdout)
+        process = Popen(command, stdout=f_stdout, stderr=f_stdout)
         process.communicate()
 
     with exit_file.open('w') as f:
@@ -94,7 +97,7 @@ def execute_or_get_cached_result(command: Iterable[str], cache_period_sec: float
 
     # Execute and cache the result
     # Output cache file encoding must be the same as stdout encoding
-    cache_file_encoding = sys.stdout.encoding
+    cache_file_encoding = stdout.encoding
     if not cache_file_encoding:
         cache_file_encoding = "utf-8"
     return_code = execute_command(command, exit_file, output_cache_file,
@@ -129,12 +132,12 @@ def wait_for_previous_command(pid_file: Path, wait_time_sec: int) -> bool:
             # Corrupted or not readable PID file
             pass
         else:
-            if not psutil.pid_exists(pid):
+            if not pid_exists(pid):
                 # Stale lock file, remove it
                 pid_file.unlink()
                 return True
 
-        logging.error("Timeout waiting for previous command to finish.")
+        print("ERROR: Timeout waiting for previous command to finish.")
         return False
 
 
@@ -154,9 +157,9 @@ def send_text_to_stdout(text_file: Path) -> bool:
         # Output cached data
         # Open in binary mode and copy to stdout buffer directly to avoid unnecessary decoding/encoding
         with text_file.open('rb') as f:
-            shutil.copyfileobj(f, sys.stdout.buffer)
+            copyfileobj(f, stdout.buffer)
         # Flush output here to force SIGPIPE to be triggered while inside this try block.
-        sys.stdout.flush()
+        stdout.flush()
         return True
     except BrokenPipeError:
         # This handles BrokenPipeError on piping the result to 'head' or similar tools.
@@ -164,7 +167,7 @@ def send_text_to_stdout(text_file: Path) -> bool:
         # Python flushes standard streams on exit; redirect remaining output to devnull to avoid another
         # BrokenPipeError at shutdown
         devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, sys.stdout.fileno())
+        os.dup2(devnull, stdout.fileno())
         # Python exits with error code 1 on EPIPE
         return False
 
@@ -219,16 +222,16 @@ def main():
     try:
         if pid_file is None:
             print(f"ERROR: Process for given command still running: timeout ({MAX_WAIT_PREV_S}")
-            sys.exit(2)
+            exit(2)
         if os.getpid() != int(pid_file.read_text()):
             print(f"ERROR: Creating PID file failed: Current process PID does not equal PID in the file.")
-            sys.exit(2)
+            exit(2)
     except ValueError as e:
         print(f"ERROR: Creating PID file failed: {repr(e)}")
-        sys.exit(2)
+        exit(2)
     except IOError as e:
         print(f"ERROR: Creating PID file failed: {repr(e)}")
-        sys.exit(2)
+        exit(2)
 
     try:
         # Check cache and execute the command if needed
@@ -237,10 +240,10 @@ def main():
         stdout_ok = send_text_to_stdout(cached_output)
 
         if stdout_ok:
-            sys.exit(return_code)
+            exit(return_code)
         else:
             # On pipe-broken error
-            sys.exit(1)
+            exit(1)
     finally:
         # Cleanup the PID file
         if pid_file.is_file():
