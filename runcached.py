@@ -221,13 +221,13 @@ def main():
     """
 
     parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument("command")
+    parser.add_argument("command", metavar="command ...", help="Command with arguments")
     parser.add_argument("-c", "--cache-timeout", type=float,
                         help=f"Cache timeout in seconds (float), default is {DEFAULT_CACHE_TIMEOUT_S}s")
-    parser.add_argument('rest', nargs=argparse.REMAINDER)
+    parser.add_argument('command_args', help=argparse.SUPPRESS, nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
-    command = [args.command] + args.rest
+    command = [args.command] + args.command_args
     cache_timeout = max(0.0, args.cache_timeout if args.cache_timeout is not None else DEFAULT_CACHE_TIMEOUT_S)
 
     pid_file: Path = create_pid_file(command)
