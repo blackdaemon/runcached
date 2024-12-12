@@ -203,18 +203,18 @@ def create_pid_file(command: Iterable[str]) -> Optional[Path]:
 
 
 def main():
-    # Setup logging
-    logging.basicConfig(level=logging.INFO)
-
-    desc = """
+    """
     Run command and cache its output. Return cached output if cache not expired.
     """
-    parser = argparse.ArgumentParser(description=desc)
-    parser.add_argument("command", nargs="+")
-    parser.add_argument("-c", "--cache-timeout", type=float, help=f"Cache timeout in seconds (float), default is {DEFAULT_CACHE_TIMEOUT_S}s")
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("command")
+    parser.add_argument("-c", "--cache-timeout", type=float,
+                        help=f"Cache timeout in seconds (float), default is {DEFAULT_CACHE_TIMEOUT_S}s")
+    parser.add_argument('rest', nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
-    command = args.command
+    command = [args.command] + args.rest
     cache_timeout = max(0.0, args.cache_timeout if args.cache_timeout else DEFAULT_CACHE_TIMEOUT_S)
 
     pid_file: Path = create_pid_file(command)
