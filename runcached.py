@@ -217,7 +217,18 @@ def main():
 
     pid_file: Path = create_pid_file(command)
     # Timeout waiting for already running process
-    if pid_file is None:
+    try:
+        if pid_file is None:
+            print(f"ERROR: Process for given command still running: timeout ({MAX_WAIT_PREV_S}")
+            sys.exit(2)
+        if os.getpid() != int(pid_file.read_text()):
+            print(f"ERROR: Creating PID file failed: Current process PID does not equal PID in the file.")
+            sys.exit(2)
+    except ValueError as e:
+        print(f"ERROR: Creating PID file failed: {repr(e)}")
+        sys.exit(2)
+    except IOError as e:
+        print(f"ERROR: Creating PID file failed: {repr(e)}")
         sys.exit(2)
 
     try:
