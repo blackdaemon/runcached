@@ -42,10 +42,10 @@ else:
     from psutil import pid_exists
 
 # Configurable parameters
-DEFAULT_CACHE_TIMEOUT_S: float = 20
-MAX_WAIT_PREV_S: int = 5
-MIN_RAND_S: float = 0
-MAX_RAND_S: float = 0
+DEFAULT_CACHE_TIMEOUT_SEC: float = 20
+MAX_WAIT_PREV_SEC: int = 5
+MIN_RAND_SEC: float = 0
+MAX_RAND_SEC: float = 0
 
 
 def get_cache_dir() -> Path:
@@ -93,7 +93,7 @@ def execute_command(command: Sequence[str], exit_file: Path, output_cache_file: 
         raise
 
 
-def execute_or_get_cached_result(command: Iterable[str], cache_period_sec: float) -> (Path, int):
+def execute_or_get_cached_result(command: Iterable[str], cache_timeout_sec: float) -> (Path, int):
     """
     Execute a command and redirect stdout & stderr into a cache file.
 
@@ -110,9 +110,11 @@ def execute_or_get_cached_result(command: Iterable[str], cache_period_sec: float
     exit_file = Path(cache_dir, f"{command_hash}.exit")
     cmd_file = Path(cache_dir, f"{command_hash}.cmd")
 
-    if output_cache_file.is_file() and time.time() - output_cache_file.stat().st_mtime <= cache_period_sec:
+    # If cache is still valid, return cached result
+    if output_cache_file.is_file() and time.time() - output_cache_file.stat().st_mtime <= cache_timeout_sec:
         return output_cache_file, int(exit_file.read_text())
 
+    # Create cmd file only once
     if not cmd_file.is_file():
         with cmd_file.open('w') as f:
             f.write(" ".join(command))
@@ -215,11 +217,11 @@ def create_pid_file(command: Iterable[str]) -> Optional[Path]:
     pid_file = Path(cache_dir, f"{command_hash}.pid")
 
     # Random sleep
-    if MAX_RAND_S - MIN_RAND_S > 0:
-        time.sleep(random.uniform(MIN_RAND_S, MAX_RAND_S))
+    if MAX_RAND_SEC - MIN_RAND_SEC > 0:
+        time.sleep(random.uniform(MIN_RAND_SEC, MAX_RAND_SEC))
 
     # Avoid parallel execution
-    if not wait_for_previous_command(pid_file, MAX_WAIT_PREV_S):
+    if not wait_for_previous_command(pid_file, MAX_WAIT_PREV_SEC):
         return None
 
     # Create a PID file
@@ -237,18 +239,18 @@ def main():
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument("command", metavar="command ...", help="Command with arguments")
     parser.add_argument("-c", "--cache-timeout", type=float,
-                        help=f"Cache timeout in seconds (float), default is {DEFAULT_CACHE_TIMEOUT_S}s")
+                        help=f"Cache timeout in seconds (float), default is {DEFAULT_CACHE_TIMEOUT_SEC}s")
     parser.add_argument('command_args', help=argparse.SUPPRESS, nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
     command = [args.command] + args.command_args
-    cache_timeout = max(0.0, args.cache_timeout if args.cache_timeout is not None else DEFAULT_CACHE_TIMEOUT_S)
+    cache_timeout = max(0.0, args.cache_timeout if args.cache_timeout is not None else DEFAULT_CACHE_TIMEOUT_SEC)
 
     pid_file: Path = create_pid_file(command)
     # Timeout waiting for already running process
     try:
         if pid_file is None:
-            print(f"ERROR: Process for given command still running: timeout ({MAX_WAIT_PREV_S}")
+            print(f"ERROR: Process for given command still running: timeout ({MAX_WAIT_PREV_SEC}")
             exit(2)
         if os.getpid() != int(pid_file.read_text()):
             print(f"ERROR: Creating PID file failed: Current process PID does not equal PID in the file.")
