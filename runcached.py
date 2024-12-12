@@ -75,6 +75,9 @@ def execute_command(command: Sequence[str], exit_file: Path, output_cache_file: 
         process = Popen(command, stdout=f_stdout, stderr=f_stdout)
         process.communicate()
 
+    # Must update the modification timestamp so that the command runtime does not add to cache expiration timeout
+    output_cache_file.touch()
+
     with exit_file.open('w') as f:
         f.write(str(process.returncode))
 
