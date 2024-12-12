@@ -85,6 +85,16 @@ def execute_command(command: Sequence[str], exit_file: Path, output_cache_file: 
 
 
 def execute_or_get_cached_result(command: Iterable[str], cache_period_sec: float) -> (Path, int):
+    """
+    Execute a command and redirect stdout & stderr into a cache file.
+
+    If the cache already exists for given command and is still valid (within cache_period_sec),
+    cached output is returned without running the command.
+
+    :param command:
+    :param cache_period_sec:
+    :return: (output_cache_file, return_code)
+    """
     cache_dir = get_cache_dir()
     command_hash = generate_command_hash(command)
     output_cache_file = Path(cache_dir, f"{command_hash}.data")
