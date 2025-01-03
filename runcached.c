@@ -6,6 +6,7 @@
  * Author Spiros Ioannou sivann <at> gmail.com 2012
  *
  */
+// +build ignore
 
 #include <stdio.h>
 #include <stdlib.h>

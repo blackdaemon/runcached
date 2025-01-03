@@ -23,16 +23,19 @@ __license__ = "Apache License, Version 2.0"
 __status__ = "Development"
 
 import argparse
+import fcntl
 import os
 import random
+import signal
+import subprocess
+import sys
 import time
-from collections.abc import Sequence
-from contextlib import suppress
+from collections.abc import Sequence, Callable
+from contextlib import suppress, contextmanager
 from hashlib import md5
 from pathlib import Path
 from shutil import copyfileobj
 from subprocess import Popen
-from sys import stdout, exit
 from typing import Iterable, Optional
 
 # Avoid importing psutil if not necessary
@@ -46,6 +49,8 @@ DEFAULT_CACHE_TIMEOUT_SEC: float = 20
 MAX_WAIT_PREV_SEC: int = 5
 MIN_RAND_SEC: float = 0
 MAX_RAND_SEC: float = 0
+
+os.environ['PYTHONUNBUFFERED'] = '1'
 
 
 def get_cache_dir() -> Path:
@@ -64,70 +69,97 @@ def generate_command_hash(command: Iterable[str]) -> str:
     return md5(" ".join(command).encode("utf-8")).hexdigest()
 
 
-def execute_command(command: Sequence[str], exit_file: Path, output_cache_file: Path,
-                    output_cache_file_encoding: str = "utf-8") -> int:
+class CommandCache(object):
+    def __init__(self, command:Sequence[str], cache_timeout:float):
+        self.cache_timeout = cache_timeout
+        self.command = command
+        self.cache_dir = get_cache_dir()
+        self.command_hash = generate_command_hash(command)
+        self.output_cache = Path(self.cache_dir, f"{self.command_hash}.data")
+        self.exit_file = Path(self.cache_dir, f"{self.command_hash}.exit")
+        self.cmd_file = Path(self.cache_dir, f"{self.command_hash}.cmd")
+        if not self.cmd_file.is_file():
+            with self.cmd_file.open('w') as f:
+                f.write(" ".join(self.command))
+
+    def is_valid(self, cache_timeout: Optional[float] = None):
+        if cache_timeout is None:
+            cache_timeout = self.cache_timeout
+        return self.output_cache.is_file() and time.time() - self.output_cache.stat().st_mtime <= cache_timeout
+
+    def invalidate(self):
+        self.output_cache.unlink()
+
+    def cache_result(self, f: Iterable[str]):
+        output_cache_file_encoding = "utf-8"
+        with self.output_cache.open('w', encoding=output_cache_file_encoding) as f_cache:
+            try:
+                while True:
+                    line = next(f)
+                    f_cache.write(line)
+                    f_cache.flush()
+            except StopIteration as s:
+                return_code = s.value
+                # print(f"{return_code=}")
+            except BrokenPipeError:
+                return_code = 0
+                # print(f"{return_code=}")
+            except KeyboardInterrupt:
+                return_code = 0
+                # print(f"{return_code=}")
+                raise
+            finally:
+                with self.exit_file.open('w') as f:
+                    f.write(str(return_code))
+
+                # Must update the modification timestamp so that the command runtime does not add to cache expiration timeout
+                self.output_cache.touch()
+
+        return return_code
+
+
+def execute_command(command: Sequence[str], output_cache_file_encoding: str = "utf-8") -> Iterable[str]:
     """
     Execute a command and redirect results into cache files:
 
         - execution return_code into exit_file
         - stdout & stderr into output_cache_file
     """
-    try:
-        with output_cache_file.open('w', encoding=output_cache_file_encoding) as f_stdout:
-            process = Popen(command, stdout=f_stdout, stderr=f_stdout)
-            process.communicate()
+    return_code = 1
+    keyboard_interrupt = False
+    process = Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    while process.poll() is None:
+        try:
+            if True: #process.stdout.readable():
+                # print("Reading the line from command output...", file=sys.stderr)
+                line = process.stdout.readline().decode(output_cache_file_encoding)
+                try:
+                    process.stdout.flush()
+                    if line:
+                        print(line, end="", file=sys.stdout, flush=True)
+                except BrokenPipeError:
+                    # print("BrokenPipeError...", file=sys.stderr)
+                    devnull = os.open(os.devnull, os.O_WRONLY)
+                    os.dup2(devnull, sys.stdout.fileno())
+                    process.send_signal(signal.SIGPIPE)
+                    return_code = 0
+                    break
+                else:
+                    yield line
+            else:
+                break
+                # time.sleep(.5)
+        except KeyboardInterrupt:
+            return_code = 1
+            keyboard_interrupt = True
+            break
+    else:
+        return_code = process.returncode
 
-        # Must update the modification timestamp so that the command runtime does not add to cache expiration timeout
-        output_cache_file.touch()
-
-        with exit_file.open('w') as f:
-            f.write(str(process.returncode))
-
-        return process.returncode
-    except:
-        # Cleanup on error and remove cache files
-        with suppress(IOError):
-            output_cache_file.unlink()
-        with suppress(IOError):
-            exit_file.unlink()
-        raise
-
-
-def execute_or_get_cached_result(command: Iterable[str], cache_timeout_sec: float) -> (Path, int):
-    """
-    Execute a command and redirect stdout & stderr into a cache file.
-
-    If the cache already exists for given command and is still valid (within cache_period_sec),
-    cached output is returned without running the command.
-
-    :param command:
-    :param cache_timeout_sec: Cache timeout in seconds
-    :return: (output_cache_file, return_code)
-    """
-    cache_dir = get_cache_dir()
-    command_hash = generate_command_hash(command)
-    output_cache_file = Path(cache_dir, f"{command_hash}.data")
-    exit_file = Path(cache_dir, f"{command_hash}.exit")
-    cmd_file = Path(cache_dir, f"{command_hash}.cmd")
-
-    # If cache is still valid, return cached result
-    if output_cache_file.is_file() and time.time() - output_cache_file.stat().st_mtime <= cache_timeout_sec:
-        return output_cache_file, int(exit_file.read_text())
-
-    # Create cmd file only once
-    if not cmd_file.is_file():
-        with cmd_file.open('w') as f:
-            f.write(" ".join(command))
-
-    # Execute and cache the result
-    # Output cache file encoding must be the same as stdout encoding
-    cache_file_encoding = stdout.encoding
-    if not cache_file_encoding:
-        cache_file_encoding = "utf-8"
-    return_code = execute_command(command, exit_file, output_cache_file,
-                                  output_cache_file_encoding=cache_file_encoding)
-
-    return output_cache_file, return_code
+    if keyboard_interrupt:
+        raise KeyboardInterrupt()
+    else:
+        return return_code
 
 
 def wait_for_previous_command(pid_file: Path, wait_time_sec: int) -> bool:
@@ -186,9 +218,9 @@ def send_text_to_stdout(text_file: Path) -> bool:
         # Output cached data
         # Open in binary mode and copy to stdout buffer directly to avoid unnecessary decoding/encoding
         with text_file.open('rb') as f:
-            copyfileobj(f, stdout.buffer)
+            copyfileobj(f, sys.stdout.buffer)
         # Flush output here to force SIGPIPE to be triggered while inside this try block.
-        stdout.flush()
+        sys.stdout.flush()
         return True
     except BrokenPipeError:
         # This handles BrokenPipeError on piping the result to 'head' or similar tools.
@@ -196,7 +228,7 @@ def send_text_to_stdout(text_file: Path) -> bool:
         # Python flushes standard streams on exit; redirect remaining output to devnull to avoid another
         # BrokenPipeError at shutdown
         devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, stdout.fileno())
+        os.dup2(devnull, sys.stdout.fileno())
         # Python exits with error code 1 on EPIPE
         return False
 
@@ -240,6 +272,12 @@ def main():
     parser.add_argument("command", metavar="command ...", help="Command with arguments")
     parser.add_argument("-c", "--cache-timeout", type=float,
                         help=f"Cache timeout in seconds (float), default is {DEFAULT_CACHE_TIMEOUT_SEC}s")
+    parser.add_argument("-e", "--cache-on-error", default=False, action="store_true",
+                        help="Cache the command result also if it returns nonzero error code")
+    parser.add_argument("-a", "--cache-on-abort", default=False, action="store_true",
+                        help="Cache the command result also on ^C keyboard interrupt")
+    parser.add_argument("-v", "--verbose", default=False, action="store_true",
+                        help="Print diagnostic information")
     parser.add_argument('command_args', help=argparse.SUPPRESS, nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
@@ -251,28 +289,64 @@ def main():
     try:
         if pid_file is None:
             print(f"ERROR: Process for given command still running: timeout ({MAX_WAIT_PREV_SEC}")
-            exit(2)
+            sys.exit(2)
         if os.getpid() != int(pid_file.read_text()):
             print(f"ERROR: Creating PID file failed: Current process PID does not equal PID in the file.")
-            exit(2)
+            sys.exit(2)
     except ValueError as e:
         print(f"ERROR: Creating PID file failed: {repr(e)}")
-        exit(2)
+        sys.exit(2)
     except IOError as e:
         print(f"ERROR: Creating PID file failed: {repr(e)}")
-        exit(2)
+        sys.exit(2)
 
     try:
-        # Check cache and execute the command if needed
-        cached_output, return_code = execute_or_get_cached_result(command, cache_timeout)
+        cache = CommandCache(command, cache_timeout=cache_timeout)
 
-        stdout_ok = send_text_to_stdout(cached_output)
+        # Execute and cache the result
+        # Output cache file encoding must be the same as sys.stdout encoding
+        cache_file_encoding = sys.stdout.encoding
+        if not cache_file_encoding:
+            cache_file_encoding = "utf-8"
 
-        if stdout_ok:
-            exit(return_code)
+        # If cache is still valid, return cached result
+        if cache.is_valid(cache_timeout):
+            if args.verbose:
+                print("DIAG: Returning cached result")
+            stdout_ok = send_text_to_stdout(cache.output_cache)
+            # TODO: (pavel) 13/12/2024 Provide correct value
+            return_code = int(cache.exit_file.read_text())
+        else:
+            # Check cache and execute the command if needed
+            if args.verbose:
+                print("DIAG: Executing command")
+            executor = execute_command(command, output_cache_file_encoding=cache_file_encoding)
+            return_code = cache.cache_result(executor)
+
+        if return_code !=0 and not args.cache_on_error:
+            with suppress(IOError):
+                if args.verbose:
+                    print("DIAG: Destroying output cache (RC)")
+                cache.invalidate()
+
+        # TODO: (pavel) 13/12/2024 Fix stdout_ok
+        if True:
+        # if stdout_ok:
+           sys.exit(return_code)
         else:
             # On pipe-broken error
-            exit(1)
+            sys.exit(1)
+    except (KeyboardInterrupt, Exception) as e:
+            # Cleanup on error and remove cache files
+            # print(isinstance(e, KeyboardInterrupt))
+            # print(f"{args.cache_on_error=}; {args.cache_on_abort=}")
+            if args.cache_on_error or isinstance(e, KeyboardInterrupt) and args.cache_on_abort:
+                raise
+            if args.verbose:
+                print("DIAG: Destroying output cache (KI)")
+            with suppress(IOError):
+                cache.invalidate()
+            raise
     finally:
         # Cleanup the PID file
         if pid_file.is_file():
@@ -280,4 +354,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (KeyboardInterrupt) as e:
+        # raise
+        ...
+        # Suppress traceback on specific interrupts
+        # print(e)
