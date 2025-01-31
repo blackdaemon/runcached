@@ -63,7 +63,7 @@ func TestPreprocessArguments(t *testing.T) {
 // Test for constructing bash command
 func TestConstructBashCommand(t *testing.T) {
 	args := []string{"ls", "-l", `"file with\\ spaces"`}
-	expected := `ls -l \"file with\\\\ spaces\"`
+	expected := `ls -l \"file with\\ spaces\"`
 	command := main.ConstructBashCommand(args)
 
 	if command != expected {

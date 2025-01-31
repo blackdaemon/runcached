@@ -181,7 +181,7 @@ func ConstructBashCommand(args []string) string {
 	// Construct the final bash command with all arguments
 // 	return "\"" + strings.Replace(strings.Join(escapedArgs, " "), "\"", "\\\"", -1) + "\""
 	argsStr := strings.Join(escapedArgs, ` `)
-	argsStr = strings.Replace(argsStr, "\\", "\\\\", -1)
+//	argsStr = strings.Replace(argsStr, "\\", "\\\\", -1)
 	argsStr = strings.Replace(argsStr, "\"", "\\\"", -1)
 	return argsStr
 }
@@ -430,16 +430,16 @@ options:
 func PreprocessArguments(args []string) []string {
 	var processedArgs []string
 	for _, arg := range args {
+		// Escape backslashes if any
 		arg = strings.ReplaceAll(arg, `\`, `\\`)
+		// Preserve double-quotes by escaping them
 		arg = strings.ReplaceAll(arg, `"`, `\"`)
 		// Preserve quotes by escaping them
 		if len(arg) >= 2 && arg[0] == '\'' && arg[len(arg)-1] == '\'' {
 			arg = "\\'" + arg[1 : len(arg)-1] + "\\'"
 		}
-		// Escape backslashes if any
 		processedArgs = append(processedArgs, arg)
 	}
-//     log.Fatal(processedArgs)
 	return processedArgs
 }
 
