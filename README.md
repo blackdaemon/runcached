@@ -39,7 +39,23 @@ runcached [-c cacheperiod] <command to execute with args>
 runcached.sh  <command to execute with args>
 ```
 
+### Go (most recent and advanced version)
+```
+runcached [-h] [-c CACHE_TIMEOUT] [-e] [-a] [-v] [-d] [-i] <command to execute with args>
 
+positional arguments:
+  command ...           Command with arguments
+
+options:
+  -h, --help            show this help message and exit
+  -c CACHE_TIMEOUT, --cache-timeout CACHE_TIMEOUT
+                        Cache timeout in seconds (float), default is 20s
+  -e, --cache-on-error  Cache the command result also if it returns nonzero error code
+  -a, --cache-on-abort  Cache the command result also on ^C keyboard interrupt
+  -d, --debug           Debugging cache information
+  -i, --inspect         Inspect cache contents (opens with 'less' command)
+  -v, --verbose         Print diagnostic information
+```
 
 ## Examples
 
