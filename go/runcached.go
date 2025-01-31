@@ -38,7 +38,6 @@ const (
 )
 
 var verbose bool
-var debug bool
 
 type CommandCache struct {
 	Command      []string
@@ -171,6 +170,21 @@ func CustomParse(input string) ([]string, error) {
 	return result, nil
 }
 
+func writeExitFile(exitFile string, exitCode int) {
+    exitFileHandle, err := os.Create(exitFile)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Failed to create exit file: %v\n", err)
+        return
+    }
+    defer exitFileHandle.Close()
+
+    _, err = exitFileHandle.WriteString(strconv.Itoa(exitCode))
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Failed to write exit code to file: %v\n", err)
+        return
+    }
+}
+
 func ConstructBashCommand(args []string) string {
 	// Use shellwords to properly escape and join arguments
 	escapedArgs, err := CustomParse(strings.Join(args, ` `))
@@ -230,6 +244,7 @@ func ExecuteCommand(command []string, cache *CommandCache) int {
 		defer wg.Done() // Decrement the counter when the Goroutine completes
 
         _, err := io.Copy(multiWriter, teeReader)
+        os.Stdout.Sync()
         if err != nil {
             fmt.Println("Error copying to writers:", err)
         }
@@ -241,18 +256,7 @@ func ExecuteCommand(command []string, cache *CommandCache) int {
             // Wait for the Goroutine to finish copying the data
             wg.Wait()
 
-            exitFile, err := os.Create(cache.ExitFile)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Failed to create exit file: %v\n", err)
-                return 1
-            }
-            defer exitFile.Close()
-
-            _, err = exitFile.WriteString(strconv.Itoa(exitErr.ExitCode()))
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Failed to write exit code to file: %v\n", err)
-                return 1
-            }
+            writeExitFile(cache.ExitFile, exitErr.ExitCode())
 
 			return exitErr.ExitCode()
 		}
@@ -261,6 +265,8 @@ func ExecuteCommand(command []string, cache *CommandCache) int {
 
 	// Wait for the Goroutine to finish copying the data
     wg.Wait()
+
+    writeExitFile(cache.ExitFile, 0)
 
 	return 0
 }
@@ -404,8 +410,54 @@ func RunCached(command []string, cacheTimeout float64, cacheOnError bool, cacheO
 	}
 }
 
+func ternary(condition bool, trueValue, falseValue string) string {
+	if condition {
+		return trueValue
+	}
+	return falseValue
+}
+
+func CacheInfo(command []string, cacheTimeout float64) {
+	cache := NewCommandCache(command, cacheTimeout)
+    fmt.Printf("  command:     %s\n", cache.Command)
+    fmt.Printf("  return-code: %s\n", readFileOrDefault(cache.ExitFile, ""))
+    fmt.Printf("  timeout:     %.2fs%s\n", cache.CacheTimeout, ternary(cache.IsValid(), "", " (expired)"))
+    fmt.Printf("  directory:   %s\n", cache.CacheDir)
+    fmt.Printf("  hash:        %s\n", cache.CommandHash)
+    fmt.Println("Cache files:")
+    fmt.Printf("  command:     %s\n", cache.CmdFile)
+    fmt.Printf("  return-code: %s\n", cache.ExitFile)
+    fmt.Printf("  data:        %s\n", cache.OutputCache)
+}
+
+func getPagerCommand(fileName string) []string {
+    // Run 'less' via bash in case it is defined as an alias
+    defaultPager := []string{"bash",  "-i",  "-c", fmt.Sprintf("less %s", fileName)}
+    pagerCommand, pagerVarExists := os.LookupEnv("PAGER")
+    if !pagerVarExists {
+        return defaultPager
+    }
+    pager, _ := CustomParse(pagerCommand)
+    return append(pager, fileName)
+}
+
+func CacheInspect(command []string, cacheTimeout float64) {
+    cache := NewCommandCache(command, cacheTimeout)
+    pagerCmd := getPagerCommand(cache.OutputCache)
+//    fmt.Printf("%v", pagerCmd)
+    cmd := exec.Command(pagerCmd[0], pagerCmd[1:]...)
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    err := cmd.Start()
+    err = cmd.Wait()
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Failed to inspect cache: %v\n", err)
+        os.Exit(1)
+    }
+}
+
 func printUsage() {
-    fmt.Fprintln(os.Stderr, "Usage: runcached [-h] [-c CACHE_TIMEOUT] [-e] [-a] [-v] command ...")
+    fmt.Fprintln(os.Stderr, "Usage: runcached [-h] [-c CACHE_TIMEOUT] [-e] [-a] [-v] [-d] [-i] command ...")
 }
 
 func printHelp() {
@@ -421,6 +473,7 @@ options:
   -e, --cache-on-error  Cache the command result also if it returns nonzero error code
   -a, --cache-on-abort  Cache the command result also on ^C keyboard interrupt
   -d, --debug           Debugging cache information
+  -i, --inspect         Inspect cache contents (opens with 'less' command)
   -v, --verbose         Print diagnostic information
  `
     fmt.Fprint(os.Stderr, text)
@@ -444,8 +497,7 @@ func PreprocessArguments(args []string) []string {
 }
 
 func main() {
-// 	var cacheTimeout float64
-	var cacheOnError, cacheOnAbort bool
+	var cacheOnError, cacheOnAbort, debugCache, inspectCache bool
 
     helpFlag := flag.Bool("help", false, "Show help")
 	flag.BoolVar(helpFlag, "h", false, "Show help")
@@ -453,7 +505,8 @@ func main() {
 	flag.Float64Var(cacheTimeoutFlag, "cache-timeout", defaultCacheTimeoutSec, "Cache timeout in seconds")
 	flag.BoolVar(&cacheOnError, "e", false, "Cache command result even on nonzero error code")
 	flag.BoolVar(&cacheOnAbort, "a", false, "Cache command result even on keyboard interrupt")
-	flag.BoolVar(&debug, "d", false, "Enable cache debugging output")
+	flag.BoolVar(&debugCache, "d", false, "Print cache information")
+	flag.BoolVar(&inspectCache, "i", false, "Inspect cache contents")
 	flag.BoolVar(&verbose, "v", false, "Enable verbose mode")
 	args := os.Args[1 : len(os.Args)]
 	flag.CommandLine.Parse(PreprocessArguments(args))
@@ -473,6 +526,18 @@ func main() {
 //     log.Fatal(os.Args)
 //     log.Fatal(flag.Args())
 	command := flag.Args()
+
+    if inspectCache {
+        CacheInspect(command, *cacheTimeoutFlag)
+    }
+
+    if debugCache {
+        CacheInfo(command, *cacheTimeoutFlag)
+    }
+
+    if inspectCache || debugCache {
+        os.Exit(0)
+    }
 
     os.Exit(RunCached(command, *cacheTimeoutFlag, cacheOnError, cacheOnAbort))
 }
